@@ -31,8 +31,7 @@ public class CargaInicial {
 
     // El @Bean debe estar activo para que se ejecute la carga al iniciar Render
     @Bean
-    @Transactional
-    // Usamos transacciones para el guardado por lotes
+    // ⚠️ ELIMINAMOS @Transactional de aquí. La ponemos en el método de guardado.
     CommandLineRunner iniciarCarga() {
         return args -> {
             long countBD = repository.count();
@@ -60,7 +59,6 @@ public class CargaInicial {
             String csvSanitizado = csvCompleto.replace("\"", "");
 
             // 3. CARGA POR LOTES (Batch Loading)
-            // Reducimos el lote para ser conservadores con la memoria heap de Render
             int batchSize = 1000;
             int totalRegistros = lineasReconstruidas.size() - 1;
             int registrosGuardados = 0;
@@ -107,7 +105,8 @@ public class CargaInicial {
                     }
 
                     // c. Guardamos el lote
-                    repository.saveAll(activosLote);
+                    // ⚠️ LLAMAMOS AL NUEVO MÉTODO TRANSACCIONAL EN OTRA CLASE
+                    guardarLoteTransaccional(activosLote);
                     registrosGuardados += activosLote.size();
                     System.out.print("📦"); // Indicador de progreso
 
@@ -144,6 +143,12 @@ public class CargaInicial {
                 System.out.println("   Revisa el reporte de errores de parsing (arriba) para ver la causa.");
             }
         };
+    }
+
+    // 🏆 NUEVO MÉTODO AISLADO: Ahora esta es la única parte transaccional
+    @Transactional
+    public void guardarLoteTransaccional(List<Activo> activos) {
+        repository.saveAll(activos);
     }
 
     // Método de reconstrucción que ya teníamos
