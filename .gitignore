@@ -1,0 +1,60 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+--- Archivos de Compilación ---
+*.class
+*.jar
+*.war
+
+--- IntelliJ IDEA (Configuración local de tu editor) ---
+
+.idea/
+out/
+
+--- Logs ---
+
+*.log
+logs/
+
+--- Maven Wrapper (Opcional, a veces se sube, a veces no) ---
+
+!.mvn/wrapper/maven-wrapper.properties
+
+--- Base de Datos Local (si usas H2) ---
+
+*.mv.db
+*.trace.db
+
+*.tar
+Instalador_Activos/

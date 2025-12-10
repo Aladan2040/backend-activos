@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  db_activos:
+    image: postgres:15
+    container_name: postgres_activos
+    environment:
+      POSTGRES_DB: gestion_activos
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
