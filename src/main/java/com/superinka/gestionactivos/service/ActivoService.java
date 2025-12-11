@@ -1,12 +1,11 @@
 package com.superinka.gestionactivos.service;
 
-import com.superinka.gestionactivos.Activo;
+import com.superinka.gestionactivos.entity.Activo;
 import com.superinka.gestionactivos.ActivoRepository;
 import com.superinka.gestionactivos.dto.ResumenActivoDTO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -112,6 +111,7 @@ public class ActivoService {
         ResumenActivoDTO dto = new ResumenActivoDTO();
         dto.setCodigo(a.getCodigo());
         dto.setDescripcion(a.getDescripcion());
+        dto.setCeco(a.getCeco());
         dto.setValorHistorico(a.getValorHistorico());
 
         BigDecimal rawPercent = a.getPorcentajeDepreciacion() != null ? a.getPorcentajeDepreciacion() : BigDecimal.ZERO;

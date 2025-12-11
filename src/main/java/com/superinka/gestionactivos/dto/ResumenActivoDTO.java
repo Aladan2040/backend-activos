@@ -13,6 +13,9 @@ public class ResumenActivoDTO {
     //Detalle del activo fijo
     private String descripcion;
 
+    //Campo necesario para el filtro por el centro de costo
+    private String ceco;
+
     //Valor historico ACTIVO FIJO AL 09/2025
     private BigDecimal valorHistorico;
 

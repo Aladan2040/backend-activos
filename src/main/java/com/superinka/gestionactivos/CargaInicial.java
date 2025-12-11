@@ -2,7 +2,7 @@ package com.superinka.gestionactivos;
 
 import com.opencsv.bean.CsvToBean;
 import com.opencsv.bean.CsvToBeanBuilder;
-import com.opencsv.exceptions.CsvException;
+import com.superinka.gestionactivos.entity.Activo;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -10,10 +10,8 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.BufferedReader;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringReader;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -30,89 +28,82 @@ public class CargaInicial {
     }
 
     @Bean
+    @Transactional
     CommandLineRunner iniciarCarga() {
         return args -> {
             long countBD = repository.count();
             if (countBD > 0) {
-                System.out.println("ℹ️ BD con datos (" + countBD + "). Omitiendo carga.");
+                System.out.println("ℹ️ La BD ya tiene datos (" + countBD + " registros). Omitiendo carga inicial.");
                 return;
             }
 
-            System.out.println("🚀 INICIANDO CARGA (MODO STREAMING - ULTRA BAJO CONSUMO)...");
+            System.out.println("🚀 INICIANDO CARGA (CORRECCIÓN DE COMILLAS + CECO)...");
 
             ClassPathResource resource = new ClassPathResource("Depreciacion.csv");
 
-            // 1. Lectura y Reconstrucción (Esto sí requiere cargar el texto, pero es "barato" en RAM)
-            List<String> lineasReconstruidas;
+            // 1. LEER LÍNEAS CRUDAS
+            List<String> lineasCrudas;
             try (BufferedReader br = new BufferedReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-                List<String> lineasCrudas = br.lines().collect(Collectors.toList());
-                lineasReconstruidas = reconstruirRegistros(lineasCrudas);
+                lineasCrudas = br.lines().collect(Collectors.toList());
             }
 
-            // Liberamos la lista cruda inmediatamente (Hint al GC)
-            System.out.println("🧩 Registros Lógicos: " + (lineasReconstruidas.size() - 1));
+            // 2. RECONSTRUCCIÓN (Unir líneas cortadas)
+            List<String> lineasReconstruidas = reconstruirRegistros(lineasCrudas);
+            System.out.println("🧩 Registros Lógicos reconstruidos: " + (lineasReconstruidas.size() - 1));
 
+            // 3. LIMPIEZA QUÍMICA (CRÍTICO: Restaurado)
             String csvCompleto = String.join("\n", lineasReconstruidas);
+            // Eliminamos TODAS las comillas para evitar que '24"' rompa el formato
             String csvSanitizado = csvCompleto.replace("\"", "");
 
-            // Liberamos variables grandes
-            lineasReconstruidas = null;
-            csvCompleto = null;
-            System.gc(); // Sugerir limpieza antes de empezar lo pesado
+            // 4. PARSEO
+            CsvToBean<Activo> csvToBean = new CsvToBeanBuilder<Activo>(new StringReader(csvSanitizado))
+                    .withType(Activo.class)
+                    .withSeparator(';')
+                    .withQuoteChar('\0') // Desactivar comillas
+                    .withIgnoreLeadingWhiteSpace(true)
+                    .withIgnoreQuotations(true) // Ignorar comillas si quedaron
+                    .withThrowExceptions(false)
+                    .build();
 
-            // 2. PROCESAMIENTO POR STREAM (Iterador)
-            try (StringReader sr = new StringReader(csvSanitizado)) {
+            List<Activo> activosParsed = csvToBean.parse();
+            List<Activo> activosValidos = new ArrayList<>();
+            List<Activo> activosRechazados = new ArrayList<>();
 
-                CsvToBean<Activo> csvToBean = new CsvToBeanBuilder<Activo>(sr)
-                        .withType(Activo.class)
-                        .withSeparator(';')
-                        .withQuoteChar('\0')
-                        .withIgnoreLeadingWhiteSpace(true)
-                        .withIgnoreQuotations(true)
-                        .withThrowExceptions(false)
-                        .build();
-
-                // CAMBIO CLAVE: Usamos iterator() en lugar de parse()
-                // Esto lee registro por registro, sin cargar todo en memoria.
-                Iterator<Activo> iterator = csvToBean.iterator();
-
-                List<Activo> lote = new ArrayList<>();
-                int batchSize = 500; // Lote pequeño
-                int procesados = 0;
-
-                while (iterator.hasNext()) {
-                    Activo activo = iterator.next();
-
-                    if (activo.getCodigo() != null && !activo.getCodigo().isEmpty()) {
-                        lote.add(activo);
-                    }
-
-                    // Si el lote se llena, guardamos y limpiamos
-                    if (lote.size() >= batchSize) {
-                        guardarLoteTransaccional(lote);
-                        procesados += lote.size();
-                        System.out.print("."); // Feedback visual
-                        lote.clear(); // ¡Vaciamos la lista para liberar RAM!
-                        System.gc();  // Sugerir limpieza al GC
-                    }
+            for (Activo activo : activosParsed) {
+                // Validación suave: Solo exigimos que el código exista.
+                // Si el CeCo viene vacío, el objeto tendrá ceco=null, pero SE GUARDARÁ igual.
+                if (activo.getCodigo() != null && !activo.getCodigo().trim().isEmpty()) {
+                    activosValidos.add(activo);
+                } else {
+                    activosRechazados.add(activo);
                 }
-
-                // Guardar el último lote si quedó algo pendiente
-                if (!lote.isEmpty()) {
-                    guardarLoteTransaccional(lote);
-                    procesados += lote.size();
-                }
-
-                System.out.println("\n✅ CARGA FINALIZADA. Procesados: " + procesados);
-                System.out.println("   - En BD: " + repository.count());
             }
+
+            // Reporte de errores si los hay
+            if (csvToBean.getCapturedExceptions() != null && !csvToBean.getCapturedExceptions().isEmpty()) {
+                System.out.println("⚠️  ERRORES DE PARSING: " + csvToBean.getCapturedExceptions().size());
+            }
+
+            System.out.println("💾 Guardando " + activosValidos.size() + " registros...");
+
+            // Guardado por lotes
+            int batchSize = 1000;
+            for (int i = 0; i < activosValidos.size(); i += batchSize) {
+                int end = Math.min(i + batchSize, activosValidos.size());
+                guardarLoteTransaccional(activosValidos.subList(i, end));
+                System.out.print(".");
+                System.gc(); // Ayudar a la memoria
+            }
+
+            System.out.println("\n✅ CARGA COMPLETADA. Total en BD: " + repository.count());
         };
     }
 
     @Transactional
     public void guardarLoteTransaccional(List<Activo> activos) {
         repository.saveAll(activos);
-        repository.flush(); // Forzar la escritura a BD inmediatamente
+        repository.flush();
     }
 
     private List<String> reconstruirRegistros(List<String> lineasCrudas) {

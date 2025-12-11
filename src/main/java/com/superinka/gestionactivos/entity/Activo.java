@@ -1,7 +1,8 @@
-package com.superinka.gestionactivos;
+package com.superinka.gestionactivos.entity;
 
 import com.opencsv.bean.CsvBindByName;
 import com.opencsv.bean.CsvCustomBindByName;
+import com.superinka.gestionactivos.MoneyConverter;
 import jakarta.persistence.*;
 import lombok.Data;
 
