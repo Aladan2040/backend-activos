@@ -28,104 +28,114 @@ public class CargaInicial {
     }
 
     @Bean
-    @Transactional
     CommandLineRunner iniciarCarga() {
         return args -> {
             long countBD = repository.count();
             if (countBD > 0) {
-                System.out.println("ℹ️ La BD ya tiene datos (" + countBD + " registros). Omitiendo carga inicial.");
+                System.out.println("ℹ️ La BD ya tiene datos (" + countBD + "). Omitiendo carga.");
                 return;
             }
 
-            System.out.println("🚀 INICIANDO CARGA (CORRECCIÓN DE COMILLAS + CECO)...");
+            System.out.println("🚀 INICIANDO CARGA (MODO STREAMING PURO - MEMORIA ESTABLE)...");
 
             ClassPathResource resource = new ClassPathResource("Depreciacion.csv");
 
-            // 1. LEER LÍNEAS CRUDAS
-            List<String> lineasCrudas;
             try (BufferedReader br = new BufferedReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-                lineasCrudas = br.lines().collect(Collectors.toList());
-            }
 
-            // 2. RECONSTRUCCIÓN (Unir líneas cortadas)
-            List<String> lineasReconstruidas = reconstruirRegistros(lineasCrudas);
-            System.out.println("🧩 Registros Lógicos reconstruidos: " + (lineasReconstruidas.size() - 1));
+                // 1. Leer y guardar la cabecera (La necesitamos para cada mini-lote)
+                String headerLine = br.readLine();
+                if (headerLine == null) return; // Archivo vacío
 
-            // 3. LIMPIEZA QUÍMICA (CRÍTICO: Restaurado)
-            String csvCompleto = String.join("\n", lineasReconstruidas);
-            // Eliminamos TODAS las comillas para evitar que '24"' rompa el formato
-            String csvSanitizado = csvCompleto.replace("\"", "");
+                // Limpiamos comillas de la cabecera también por si acaso
+                headerLine = headerLine.replace("\"", "");
 
-            // 4. PARSEO
-            CsvToBean<Activo> csvToBean = new CsvToBeanBuilder<Activo>(new StringReader(csvSanitizado))
-                    .withType(Activo.class)
-                    .withSeparator(';')
-                    .withQuoteChar('\0') // Desactivar comillas
-                    .withIgnoreLeadingWhiteSpace(true)
-                    .withIgnoreQuotations(true) // Ignorar comillas si quedaron
-                    .withThrowExceptions(false)
-                    .build();
+                List<String> loteLineas = new ArrayList<>();
+                StringBuilder registroActual = new StringBuilder();
+                String patronInicioRegistro = "^\\s*\"?(\\d+|#)\"?\\s*;.*";
 
-            List<Activo> activosParsed = csvToBean.parse();
-            List<Activo> activosValidos = new ArrayList<>();
-            List<Activo> activosRechazados = new ArrayList<>();
+                String linea;
+                int totalProcesados = 0;
 
-            for (Activo activo : activosParsed) {
-                // Validación suave: Solo exigimos que el código exista.
-                // Si el CeCo viene vacío, el objeto tendrá ceco=null, pero SE GUARDARÁ igual.
-                if (activo.getCodigo() != null && !activo.getCodigo().trim().isEmpty()) {
-                    activosValidos.add(activo);
-                } else {
-                    activosRechazados.add(activo);
+                // 2. Bucle de lectura línea a línea (Streaming)
+                while ((linea = br.readLine()) != null) {
+                    if (linea.trim().isEmpty()) continue;
+
+                    if (linea.matches(patronInicioRegistro)) {
+                        // Es un nuevo registro: Procesamos el anterior si existe
+                        if (registroActual.length() > 0) {
+                            loteLineas.add(registroActual.toString());
+                        }
+                        registroActual = new StringBuilder(linea);
+                    } else {
+                        // Es continuación: Lo pegamos al actual
+                        registroActual.append(" ").append(linea.trim());
+                    }
+
+                    // 3. Si el lote en memoria llega a 500, lo procesamos y vaciamos
+                    if (loteLineas.size() >= 500) {
+                        procesarLote(headerLine, loteLineas);
+                        totalProcesados += loteLineas.size();
+                        loteLineas.clear(); // ¡LIBERAR MEMORIA!
+                        System.gc(); // Sugerencia agresiva al recolector de basura
+                        System.out.print(".");
+                    }
                 }
+
+                // Agregar el último registro pendiente del buffer
+                if (registroActual.length() > 0) {
+                    loteLineas.add(registroActual.toString());
+                }
+
+                // Procesar el remanente final
+                if (!loteLineas.isEmpty()) {
+                    procesarLote(headerLine, loteLineas);
+                    totalProcesados += loteLineas.size();
+                }
+
+                System.out.println("\n✅ CARGA FINALIZADA EXITOSAMENTE.");
+                System.out.println("   - Registros procesados: " + totalProcesados);
+                System.out.println("   - Registros en BD: " + repository.count());
             }
-
-            // Reporte de errores si los hay
-            if (csvToBean.getCapturedExceptions() != null && !csvToBean.getCapturedExceptions().isEmpty()) {
-                System.out.println("⚠️  ERRORES DE PARSING: " + csvToBean.getCapturedExceptions().size());
-            }
-
-            System.out.println("💾 Guardando " + activosValidos.size() + " registros...");
-
-            // Guardado por lotes
-            int batchSize = 1000;
-            for (int i = 0; i < activosValidos.size(); i += batchSize) {
-                int end = Math.min(i + batchSize, activosValidos.size());
-                guardarLoteTransaccional(activosValidos.subList(i, end));
-                System.out.print(".");
-                System.gc(); // Ayudar a la memoria
-            }
-
-            System.out.println("\n✅ CARGA COMPLETADA. Total en BD: " + repository.count());
         };
     }
 
-    @Transactional
-    public void guardarLoteTransaccional(List<Activo> activos) {
-        repository.saveAll(activos);
-        repository.flush();
-    }
+    // Método auxiliar para procesar un pequeño lote de texto
+    private void procesarLote(String header, List<String> lineas) {
+        // Unimos el lote en un solo String grande
+        StringBuilder sb = new StringBuilder();
+        sb.append(header).append("\n"); // Agregamos cabecera para que OpenCSV sepa mapear
+        for (String l : lineas) {
+            sb.append(l).append("\n");
+        }
 
-    private List<String> reconstruirRegistros(List<String> lineasCrudas) {
-        List<String> lineasReconstruidas = new ArrayList<>();
-        StringBuilder registroActual = new StringBuilder();
-        String patronInicioRegistro = "^\\s*\"?(\\d+|#)\"?\\s*;.*";
+        // LIMPIEZA QUÍMICA: Quitamos comillas del lote entero
+        String csvSanitizado = sb.toString().replace("\"", "");
 
-        for (String linea : lineasCrudas) {
-            if (linea.trim().isEmpty()) continue;
+        // Parseo
+        CsvToBean<Activo> csvToBean = new CsvToBeanBuilder<Activo>(new StringReader(csvSanitizado))
+                .withType(Activo.class)
+                .withSeparator(';')
+                .withQuoteChar('\0') // Ignorar comillas
+                .withIgnoreLeadingWhiteSpace(true)
+                .withIgnoreQuotations(true)
+                .withThrowExceptions(false)
+                .build();
 
-            if (linea.matches(patronInicioRegistro)) {
-                if (registroActual.length() > 0) {
-                    lineasReconstruidas.add(registroActual.toString());
-                }
-                registroActual = new StringBuilder(linea);
-            } else {
-                registroActual.append(" ").append(linea.trim());
+        List<Activo> activosValidos = new ArrayList<>();
+        for (Activo a : csvToBean) {
+            // Validación mínima: Código no vacío
+            if (a.getCodigo() != null && !a.getCodigo().trim().isEmpty()) {
+                activosValidos.add(a);
             }
         }
-        if (registroActual.length() > 0) {
-            lineasReconstruidas.add(registroActual.toString());
-        }
-        return lineasReconstruidas;
+
+        // Guardado Transaccional
+        guardarEnBD(activosValidos);
+    }
+
+    @Transactional
+    public void guardarEnBD(List<Activo> activos) {
+        repository.saveAll(activos);
+        repository.flush(); // Forzar escritura a disco para liberar RAM de Hibernate
     }
 }
